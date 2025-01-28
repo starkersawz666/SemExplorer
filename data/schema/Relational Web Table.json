@@ -1,0 +1,35 @@
+{
+    "title": [
+        "pageTitle"
+    ],
+    "link": [
+        "url"
+    ],
+    "Text-nonsemantic": [
+        "s3Link",
+        "tableOrientation",
+        "textBeforeTable",
+        "textAfterTable",
+        "TableContextTimeStampAfterTable",
+        "lastModified",
+        "TableContextTimeStampBeforeTable"
+    ],
+    "Text-semantic": [
+        "relation",
+        "title",
+        "headerPosition",
+        "tableType"
+    ],
+    "Statistics-basic": [
+        "tableNum",
+        "recordEndOffset",
+        "recordOffset",
+        "keyColumnIndex",
+        "headerRowIndex"
+    ],
+    "Statistics-advanced": [],
+    "Boolean": [
+        "hasHeader",
+        "hasKeyColumn"
+    ]
+}

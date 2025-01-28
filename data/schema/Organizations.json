@@ -1,0 +1,22 @@
+{
+    "title": [
+        "Name"
+    ],
+    "link": [
+        "Website"
+    ],
+    "Text-nonsemantic": [
+        "Organization Id"
+    ],
+    "Text-semantic": [
+        "Country",
+        "Description",
+        "Industry"
+    ],
+    "Statistics-basic": [
+        "Founded",
+        "Number of employees"
+    ],
+    "Statistics-advanced": [],
+    "Boolean": []
+}

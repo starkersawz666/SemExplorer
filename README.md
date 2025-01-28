@@ -1,7 +1,7 @@
-# SemanticNetSearch
+# SemExplorer
 
 ## Introduction
-SemanticNetSearch is a tool designed to enhance the efficiency and accuracy of network data searches using large language models and natural language processing technologies. This project integrates automated text processing, SQL generation, and an interactive web interface to assist users in quickly locating and analyzing network data.
+SemExplorer is a tool designed to enhance the efficiency and accuracy of dataset searches using large language models and natural language processing technologies. This project integrates automated text processing, SQL generation, and an interactive web interface to assist users in quickly locating and analyzing data.
 
 ## Key Features
 - **Text Preprocessing**: Analyzes and preprocesses input text using NLTK and SpaCy.

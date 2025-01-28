@@ -30,12 +30,17 @@ from dashscope import Generation
 import spacy
 import re
 import datetime
+import os
+import json
 
 from styles import css_style
 from utils import randkey
 from utils import schemas
 from utils import extract
 from utils import highlight
+from utils import embedding
+from utils import ann_builder
+from tutorial import content
 
 # Configure page to use a wide layout
 st.set_page_config(layout="wide")
@@ -73,9 +78,9 @@ def load_resources():
     # Load the Word2Vec model specified in the configuration.
     word2vec_model = api.load(config['word2vec_model']['type'])
 
-    # Initialize and load the Annoy index for fast nearest neighbor retrieval.
-    ann_model = AnnoyIndex(config['ann_model']['dimensions'], 'angular')
-    ann_model.load(config['ann_model']['path'])
+    # # Initialize and load the Annoy index for fast nearest neighbor retrieval.
+    # ann_model = AnnoyIndex(config['ann_model']['dimensions'], 'angular')
+    # ann_model.load(config['ann_model']['path'])
 
     # Check if the SpaCy models have been downloaded; if not, download them.
     if config['spacy_downloaded'] == False:
@@ -91,20 +96,20 @@ def load_resources():
     # Load the SpaCy NLP model.
     spacy_nlp = spacy.load('en_core_web_sm')
     print('Model loaded')
-    return word2vec_model, ann_model, spacy_nlp
+    return word2vec_model, spacy_nlp
 
-word2vec_model, ann_model, spacy_nlp = load_resources()
+word2vec_model, spacy_nlp = load_resources()
 
-# Load network data from dataset
-@st.cache_data()
-def load_data():
-    print('Data loading started')
-    file_path = config['datasets']['with_vectors']
-    df = pd.read_csv(file_path)
-    print('Data loaded')
-    return df
+# # Load network data from dataset
+# @st.cache_data()
+# def load_data():
+#     print('Data loading started')
+#     file_path = config['datasets']['with_vectors']
+#     df = pd.read_csv(file_path)
+#     print('Data loaded')
+#     return df
 
-df = load_data()
+# df = load_data()
 
 # Text preprocessing function to tokenize and remove stopwords
 def preprocess_text(text):
@@ -120,7 +125,7 @@ def text2vec(text):
 
 # Function to check if a specific row in the DataFrame meets all the provided filters
 def meets_filters(index, basic_filter_keys, statistics_filters, df):
-    row = df.loc[df['index'] == index].iloc[0]
+    row = df.loc[df['vector_index'] == index].iloc[0]
 
     # Iterate through each key in the basic filters
     for key in basic_filter_keys:
@@ -153,7 +158,7 @@ def meets_filters(index, basic_filter_keys, statistics_filters, df):
     return True
 
 # Perform search based on filters
-def searching(text_input, basic_filter_keys, advanced_filters, return_num, df):
+def searching(text_input, basic_filter_keys, advanced_filters, return_num, df, ann_model):
     # Convert text input into a vector
     vector_input = text2vec(text_input)
 
@@ -181,13 +186,6 @@ def searching(text_input, basic_filter_keys, advanced_filters, return_num, df):
                 if len(search_results) >= return_num:
                     break
     return search_results
-
-# Generate lists of statistics options from configuration
-statistics_options = schemas.generate_statistics(config)
-statistics_options.sort()
-advanced_statistics_option = schemas.generate_advanced_statistics(config)
-advanced_statistics_option.sort()
-schema = schemas.generate_schema(config)
 
 dashscope.api_key = config['dashscope_api_key']
 
@@ -275,12 +273,15 @@ css_style.css_style()
 if 'filters' not in st.session_state:
     st.session_state.filters = []
 
-# Add a default filter to the session state
-def add_default_filter():
-    st.session_state.filters.append({'category': 'size', 'min_value': None, 'max_value': None, 'accept_missing': True})
+if 'items' not in st.session_state:
+    st.session_state['items'] = []
 
-def add_advanced_default_filter():
-    st.session_state.filters.append({'category': 'left_size', 'min_value': None, 'max_value': None, 'accept_missing': True})
+# Add a default filter to the session state
+def add_default_filter(default_category):
+    st.session_state.filters.append({'category': default_category, 'min_value': None, 'max_value': None, 'accept_missing': True})
+
+def add_advanced_default_filter(default_category):
+    st.session_state.filters.append({'category': default_category, 'min_value': None, 'max_value': None, 'accept_missing': True})
 
 # Add a filter with specified parameters
 def add_filter(category, min_value, max_value, accept_missing):
@@ -299,56 +300,51 @@ def delete_all_filters():
     st.session_state.filters = []
 
 # Perform search operation using text input and filters
-def perform_search(search_text, basic_filter_keys, advanced_filters, result_count, df):
+def perform_search(search_text, basic_filter_keys, advanced_filters, result_count, df, ann_model, schema_name):
     # Execute the search query
-    search_results = searching(search_text, basic_filter_keys, advanced_filters, result_count, df)
-    default_columns = ['name', 'link', 'description', 'size', 'volume']
-    show_columns = default_columns.copy()
+    search_results = searching(search_text, basic_filter_keys, advanced_filters, result_count, df, ann_model)
+    schema_file_path = os.path.join('./data/schema', f"{schema_name}.json")
+    with open(schema_file_path, 'r') as schema_file:
+        schema = json.load(schema_file)
+    default_cols = []
+    if schema['title'] != []:
+        default_cols.extend(schema['title'])
+    if schema['link'] != []:
+        default_cols.extend(schema['link'])
+    default_cols.append('merged_text')
+    # default_columns = ['name', 'link', 'description', 'size', 'volume']
+    show_columns = default_cols.copy()
 
     # Extend the results display columns with any basic filters that are not 'None' and not already in the default columns
     for key in basic_filter_keys:
-        if st.session_state[key] != 'None' and key not in default_columns:
+        if st.session_state[key] != 'None' and key not in default_cols:
             show_columns.append(key)
 
     # Include columns for statistics filters if they are not already part of the default columns
     for filter_ in advanced_filters:
         name = filter_['category']
-        if name not in default_columns:
+        if name not in default_cols:
             show_columns.append(name)
     
     # Populate the return table with data from each matching entry found
     return_table = pd.DataFrame(columns=show_columns)
     for index in search_results:
-        row = df.loc[df['index'] == index].iloc[0]
-        new_row = [row['name'], row['link'], row['description'], row['size'], row['volume']]
+        row = df.loc[df['vector_index'] == index].iloc[0]
+        # new_row = [row['name'], row['link'], row['description'], row['size'], row['volume']]
+        new_row = []
+        for attr in default_cols:
+            new_row.append(row[attr])
 
         # Append data if the key is active and not a default column
         for key in basic_filter_keys:
-            if st.session_state[key] != 'None' and key not in default_columns:
+            if st.session_state[key] != 'None' and key not in default_cols:
                 new_row.append(row[key])
         for filter_ in advanced_filters:
             name = filter_['category']
-            if name not in default_columns:
+            if name not in default_cols:
                 new_row.append(row[name])
         return_table.loc[len(return_table)] = new_row
     return return_table
-
-# Function to create and save a new DataFrame based on user choices regarding column mappings
-def submit_data(user_choices, original_df, main_attrs):
-    result_df = pd.DataFrame()
-
-    # Iterate over each user-specified column mapping
-    for new_col, original_col in user_choices.items():
-        if original_col is None:
-            continue # Skip processing if the user did not specify a column
-        if original_col in main_attrs:
-            result_df[original_col] = original_df[new_col].copy()
-
-    # Generate a timestamp to use in the filename, ensuring uniqueness and traceability
-    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-    rand_str = randkey.random_string(10)
-    file_name = f"data_{timestamp}_{rand_str}.csv"
-    result_df.to_csv("./datasets/user_submission/" + file_name, index=False)
 
 _ = '''
 - Streamlit Interface
@@ -359,76 +355,303 @@ It includes defining the layout, widgets, and interactions that allow users to i
 The interface is designed to be intuitive and responsive, providing a seamless user experience.
 '''
 
+item_options = ['Please select a category', 'Text-nonsemantic', 'Text-semantic', 'Statistics-basic', 'Statistics-advanced', 'Boolean']
+select_schema_default_value = "Please select a schema"
+
+def page_create():
+    st.title("Create Items")
+
+    def add_item():
+        st.session_state['items'].append({'name': '', 'category': 'Please select a category'})
+
+    def delete_item(index):
+        st.session_state['items'].pop(index)
+    
+    def create_schema():
+        if len(st.session_state.get('items', [])) == 0:
+            st.error("No items to save. Please add items before creating a schema.")
+            return
+
+        for item in st.session_state.get('items', []):
+            if item['category'] == 'Please select a category' or item['name'].strip() == '':
+                st.error("All items must have a valid name and category. Please correct the inputs.")
+                return
+        
+        schema_name = st.session_state.get('create_schema_name_key', '').strip()
+        if schema_name == '':
+            st.error("Schema name cannot be empty or consist only of whitespace. Please provide a valid name.")
+            return
+        
+        schema_folder = './data/schema'
+        if not os.path.exists(schema_folder):
+            os.makedirs(schema_folder)
+        data_saving_folder = './data/info'
+        if not os.path.exists(data_saving_folder):
+            os.makedirs(data_saving_folder)
+
+        schema_file_path = os.path.join(schema_folder, f"{schema_name}.json")
+        if os.path.exists(schema_file_path):
+            st.error(f"A schema with the name '{schema_name}' already exists. Please choose a different name.")
+            return
+        data_file_path = os.path.join(data_saving_folder, f"{schema_name}.csv")
+        if os.path.exists(data_file_path):
+            st.error(f"A dataset with the name '{schema_name}' already exists. Please choose a different name.")
+            return
+        
+        # Test dulplicated item name
+        all_item_names = []
+        if st.session_state['title_attribute_key'].strip() != '':
+            all_item_names.append(st.session_state['title_attribute_key'].strip())
+        if st.session_state['link_attribute_key'].strip() != '':
+            all_item_names.append(st.session_state['link_attribute_key'].strip())
+        for item in st.session_state['items']:
+            all_item_names.append(item['name'].strip())
+        
+        seen = set()
+        for item in all_item_names:
+            if item in seen:
+                st.error(f"Duplicated attributes exist.")
+                return
+            else:
+                seen.add(item)
+        
+        saving_schema = {}
+        saving_schema['title'] = [] if st.session_state['title_attribute_key'].strip() == '' else [st.session_state['title_attribute_key'].strip()]
+        saving_schema['link'] = [] if st.session_state['link_attribute_key'].strip() == '' else [st.session_state['link_attribute_key'].strip()]
+        for item in item_options:
+            if item != 'Please select a category':
+                saving_schema[item] = []
+        for item in st.session_state['items']:
+            if item['category'] != 'Please select a category' and item['name'].strip() != '':
+                saving_schema[item['category']].append(item['name'].strip())
+        
+        try:
+            with open(schema_file_path, 'w') as schema_file:
+                json.dump(saving_schema, schema_file, indent=4)
+            st.success(f"Schema '{schema_name}' has been successfully created and saved.")
+        except Exception as e:
+            st.error(f"An error occurred while saving the schema: {str(e)}")
+        
+        attr_list = []
+        for item in saving_schema:
+            attr_list.extend(saving_schema[item])
+        
+        empty_df = pd.DataFrame(columns=attr_list)
+        empty_df.to_csv(data_file_path, index=False)
+        
+    def load_schema_from_table(uploaded_file):
+        if uploaded_file.name.endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+        elif uploaded_file.name.endswith(".xls") or uploaded_file.name.endswith(".xlsx"):
+            df = pd.read_excel(uploaded_file)
+        
+        for attr in df.columns:
+            category = schemas.get_category_from_col(df[attr])
+            st.session_state['items'].append({'name': attr, 'category': category})
+        
+    def load_schema_from_json_pending(uploaded_file, name):
+        schema_dict = json.load(uploaded_file)
+        st.session_state['create_schema_name_pending'] = name
+        if schema_dict['title'] != []:
+            st.session_state['title_attribute_pending'] = schema_dict['title'][0]
+        else:
+            st.session_state['title_attribute_pending'] = ''
+        if schema_dict['link'] != []:
+            st.session_state['link_attribute_pending'] = schema_dict['link'][0]
+        else:
+            st.session_state['link_attribute_pending'] = ''
+        st.session_state['items_pending'] = []
+        for key in schema_dict:
+            if key != 'title' and key != 'link':
+                for item in schema_dict[key]:
+                    st.session_state['items_pending'].append({'name': item, 'category': key})
+    
+    def load_schema_from_json():
+        st.session_state['create_schema_name_key'] = st.session_state['create_schema_name_pending']
+        st.session_state['create_schema_name_pending'] = ''
+        st.session_state['title_attribute_key'] = st.session_state['title_attribute_pending']
+        st.session_state['title_attribute_pending'] = ''
+        st.session_state['link_attribute_key'] = st.session_state['link_attribute_pending']
+        st.session_state['link_attribute_pending'] = ''
+        for item in st.session_state['items_pending']:
+            st.session_state['items'].append({'name': item['name'], 'category': item['category']})
+
+    cols = st.columns([1, 1, 1, 3, 1.5, 0.5])
+    button_update_table_visible = False
+    button_update_json_visible = False
+    with cols[0]:
+        st.session_state['create_schema_name'] = st.text_input("Name of Schema", value = '', key='create_schema_name_key')
+    with cols[1]:
+        st.session_state['title_attribute'] = st.text_input("Title Attribute", value = '', key='title_attribute_key')
+    with cols[2]:
+        st.session_state['link_attribute'] = st.text_input("Link Attribute", value = '', key='link_attribute_key')
+    with cols[3]:
+        uploaded_file = st.file_uploader("Upload File", type=["csv", "xlsx", "xls", "json"], key="file_upload_key")
+        if uploaded_file is not None:
+            if "processed_file" not in st.session_state or st.session_state["processed_file"] != uploaded_file.name:
+                st.session_state["processed_file"] = uploaded_file.name
+                file_extension = uploaded_file.name.split(".")[-1].lower()
+                if file_extension == 'json':
+                    load_schema_from_json_pending(uploaded_file, uploaded_file.name[:-5])
+                    button_update_json_visible = True
+                    button_update_table_visible = False
+                else:
+                    button_update_table_visible = True
+                    button_update_json_visible = False
+    with cols[4]:
+        if uploaded_file is not None:
+            if button_update_table_visible == True:
+                update_schema_button = st.button("Update with Table", key="update_schema_button_table_key", on_click=load_schema_from_table, args=[uploaded_file,])
+            elif button_update_json_visible == True:
+                update_schema_button = st.button("Update with JSON", key="update_schema_button__json_key", on_click=load_schema_from_json)
+
+                
+
+    for i, item in enumerate(st.session_state['items']):
+        cols = st.columns([5, 5, 2, 3])
+
+        with cols[0]:
+            st.session_state['items'][i]['name'] = st.text_input(
+                "Name", value=item['name'], key=f"name_{i}")
+
+        with cols[1]:
+            st.session_state['items'][i]['category'] = st.selectbox(
+                "Category",
+                options=item_options,
+                index=item_options.index(item['category']),
+                key=f"category_{i}")
+
+        with cols[2]:
+            # st.markdown("<div style='display: flex; flex-grow: 1; align-items: flex-end;'>", unsafe_allow_html=True)
+            button_delete = st.button("Delete", key=f"delete_{i}", on_click=delete_item, args=[i,])
+            # st.markdown("</div>", unsafe_allow_html=True)
+                
+    # Add Item and Create buttons at the bottom of the page
+    bottom_cols = st.columns([1, 1, 6])
+
+    with bottom_cols[0]:
+        button_add_item = st.button("Add Item", key="button_add_item", on_click=add_item)
+
+    with bottom_cols[1]:
+        button_create = st.button("Create", key="button_create", on_click=create_schema)
+
+
 # Streamlit page for search interface
 def page_search():
     if 'original_search_text' not in st.session_state:
         st.session_state['original_search_text'] = ''
-    # Basic Filters: True / False / None filters, initialize with 'None'
-    basic_options = {}
-    for option in config['basic_filters']:
-        basic_options[option] = 'None'
-
-    for key in basic_options:
-        if key not in st.session_state:
-            st.session_state[key] = basic_options[key]
 
     # main header of the page
-    st.markdown("<h1>SemanticNetSearch Interface</h1>", unsafe_allow_html=True)
+    st.markdown("<h1>SemanticSearch Interface</h1>", unsafe_allow_html=True)
     # st.title("Network Search Interface")
+
+    select_schema_cols = st.columns([2, 6])
+    selected_schema_options = []
+    selected_schema_options.append(select_schema_default_value)
+    schemas_path = './data/schema'
+    if os.path.exists(schemas_path):
+        for file in os.listdir(schemas_path):
+            if file.endswith(".json"):
+                selected_schema_options.append(file.replace(".json", ""))
+    with select_schema_cols[0]:
+        # a selection box
+        selected_schema = st.selectbox("Select a schema", selected_schema_options, key='search_page_selected_schema_key')
+    
+    # if 'last_selected_schema' exist and differ from selected schema, delete all filters
+    if 'last_selected_schema' in st.session_state and st.session_state['last_selected_schema'] != selected_schema:
+        delete_all_filters()
+    st.session_state['last_selected_schema'] = selected_schema
+    
+    boolean_options = None
+    if selected_schema != select_schema_default_value:
+        # Initialize and load the Annoy index for fast nearest neighbor retrieval.
+        ann_models_path = "./data/ann"
+        ann_model = AnnoyIndex(config['ann_model']['dimensions'], 'angular')
+        ann_model.load(os.path.join(ann_models_path, f"{selected_schema}.ann"))
+
+        # Generate lists of statistics options from configuration
+        # statistics_options = schemas.generate_statistics(config)
+        # statistics_options.sort()
+        # advanced_statistics_option = schemas.generate_advanced_statistics(config)
+        # advanced_statistics_option.sort()
+        # schema = schemas.generate_schema(config)
+        boolean_options = schemas.get_filters(selected_schema, 'Boolean')
+        boolean_options.sort()
+        stat_options = schemas.get_filters(selected_schema, 'Statistics-basic')
+        stat_options.sort()
+        stat_adv_options = schemas.get_filters(selected_schema, 'Statistics-advanced')
+        stat_adv_options.sort()
+        all_schema = []
+        for item in boolean_options:
+            all_schema.append((item, 'bool'))
+        for item in stat_options:
+            all_schema.append((item, 'float'))
+        for item in stat_adv_options:
+            all_schema.append((item, 'float'))
+        # Basic Filters: True / False / None filters, initialize with 'None'
+        # basic_options = {}
+        # for option in config['basic_filters']:
+        #     basic_options[option] = 'None'
+
+        for key in boolean_options:
+            if key not in st.session_state:
+                st.session_state[key] = 'None'
+        
     input_column, button_column = st.columns([4, 1])
 
     if 'search_text' not in st.session_state:
         st.session_state['search_text'] = ''
     # Text area for entering the search query
-    with input_column:
-        search_text = st.text_area("Search Text", value = st.session_state['search_text'])
+    if selected_schema != select_schema_default_value:
+        with input_column:
+            search_text = st.text_area("Search Text", value = st.session_state['search_text'])
 
-    # Button for triggering filter extraction from the search text
-    with button_column:
-        st.markdown('<div class="extract-button">', unsafe_allow_html=True)
-        # Add some blank lines
-        st.markdown('<br><br>', unsafe_allow_html=True)
-        if st.button("Extract Filters"):
-            # Save the original search text for later use
-            st.session_state['original_search_text'] = search_text.strip()
-            # Condition Extraction
-            conditions = extract_filters(search_text, schema)
-            if conditions is not None:
-                # Clear existing filters before adding new ones
-                delete_all_filters()
+        # Button for triggering filter extraction from the search text
+        with button_column:
+            st.markdown('<div class="extract-button">', unsafe_allow_html=True)
+            # Add some blank lines
+            st.markdown('<br><br>', unsafe_allow_html=True)
+            if st.button("Extract Filters"):
+                # Save the original search text for later use
+                st.session_state['original_search_text'] = search_text.strip()
+                # Condition Extraction
+                conditions = extract_filters(search_text, all_schema)
+                if conditions is not None:
+                    # Clear existing filters before adding new ones
+                    delete_all_filters()
 
-                # Organize conditions and group them
-                conditions.sort(key = itemgetter(0))
-                grouped_conditions = {k: list(g) for k, g in groupby(conditions, key=itemgetter(0))}
-                for key, group in grouped_conditions.items():
-                    # Apply extracted conditions as new filters
-                    if key in statistics_options or key in advanced_statistics_option:
-                        upper_bound = None
-                        lower_bound = None
-                        for item in group:
-                            if item[1] == '<' or item[1] == '<=':
-                                if upper_bound is None or float(item[2]) < upper_bound:
-                                    upper_bound = float(item[2])
-                            elif item[1] == '>' or item[1] == '>=':
-                                if lower_bound is None or float(item[2]) > lower_bound:
-                                    lower_bound = float(item[2])
-                            elif item[1] == '=':
-                                upper_bound = lower_bound = float(item[2])
-                        add_filter(key, lower_bound, upper_bound, True)
-                    else:
-                        if group[0][2] == 'false':
-                            st.session_state[key] = 'False'
-                        elif group[0][2] == 'true':
-                            st.session_state[key] = 'True'
-            else:
-                print("No conditions extracted")
-            
-            # # Extract description and update search text if necessary
-            extracted_desc = extract_description(search_text)
-            if extracted_desc is not None:
-                st.session_state['search_text'] = extracted_desc
-            st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
+                    # Organize conditions and group them
+                    conditions.sort(key = itemgetter(0))
+                    grouped_conditions = {k: list(g) for k, g in groupby(conditions, key=itemgetter(0))}
+                    for key, group in grouped_conditions.items():
+                        # Apply extracted conditions as new filters
+                        if key in stat_options or key in stat_adv_options:
+                            upper_bound = None
+                            lower_bound = None
+                            for item in group:
+                                if item[1] == '<' or item[1] == '<=':
+                                    if upper_bound is None or float(item[2]) < upper_bound:
+                                        upper_bound = float(item[2])
+                                elif item[1] == '>' or item[1] == '>=':
+                                    if lower_bound is None or float(item[2]) > lower_bound:
+                                        lower_bound = float(item[2])
+                                elif item[1] == '=':
+                                    upper_bound = lower_bound = float(item[2])
+                            add_filter(key, lower_bound, upper_bound, True)
+                        else:
+                            if group[0][2] == 'false':
+                                st.session_state[key] = 'False'
+                            elif group[0][2] == 'true':
+                                st.session_state[key] = 'True'
+                else:
+                    print("No conditions extracted")
+                
+                # # Extract description and update search text if necessary
+                extracted_desc = extract_description(search_text)
+                if extracted_desc is not None:
+                    st.session_state['search_text'] = extracted_desc
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
     
     # Display the original search text
     original_text_col, null_button_col = st.columns([4, 1])
@@ -438,53 +661,42 @@ def page_search():
 
     # Display the basic filters using an expander
     basic_filters = st.expander("Basic Filters")
-    with st.expander("Basic Filters"):
-        for key in basic_options.keys():
-            options = ('None', 'True', 'False')
-            if key not in st.session_state:
-                st.session_state[key] = 'None'
-            
-            # For better display
-            label = key.replace("_", " ").title()
 
-            # Test if the filter is applicable
-            if key == 'reciprocal' and 'directed' in st.session_state and st.session_state['directed'] == 'False':
-                st.session_state[key] = 'None'
-            
-            if key == 'directed_cycle' and 'loops' in st.session_state and st.session_state['loops'] == 'False':
-                st.session_state[key] = 'None'
+    if boolean_options:
+        with st.expander("Basic Filters"):
+            for key in boolean_options:
+                options = ('None', 'True', 'False')
+                if key not in st.session_state:
+                    st.session_state[key] = 'None'
+                
+                # For better display
+                label = key.replace("_", " ").title()
 
-            if (key == 'positive_weights' or key == 'negative_weights') and 'weighted' in st.session_state and st.session_state['weighted'] == 'False':
-                st.session_state[key] = 'None'
+                # Display the filter
+                selected_option = st.radio(
+                    label=label,
+                    options=options,
+                    index=options.index(st.session_state[key]), 
+                    format_func=lambda x: 'None' if x == 'None' else ('True' if x == 'True' else 'False'),
+                    # key=key,
+                    horizontal=True,
+                )
 
-            if key == 'directed_cycle' and 'directed' in st.session_state and st.session_state['directed'] == 'False':
-                st.session_state[key] = 'None'
+                # # For unapplicable filters, disallow user to select them and show the reason
+                # if key == 'reciprocal' and 'directed' in st.session_state and st.session_state['directed'] == 'False':
+                #     st.markdown("<span class='bold-text'>RECIPROCAL</span> is not applicable if the graph is undirected.", unsafe_allow_html=True)
+                #     # st.write(f"RECIPROCAL is not applicable if the graph is undirected.")
+                
+                # if key == 'directed_cycle' and 'loops' in st.session_state and st.session_state['loops'] == 'False':
+                #     st.markdown("<span class='bold-text'>DIRECTED CYCLE</span> is not applicable if the graph has no loops.", unsafe_allow_html=True)
+                #     # st.write(f"DIRECTED CYCLE is not applicable if the graph has no loops.")
 
-            # Display the filter
-            selected_option = st.radio(
-                label=label,
-                options=options,
-                index=options.index(st.session_state[key]), 
-                format_func=lambda x: 'None' if x == 'None' else ('True' if x == 'True' else 'False'),
-                # key=key,
-                horizontal=True,
-            )
-
-            # For unapplicable filters, disallow user to select them and show the reason
-            if key == 'reciprocal' and 'directed' in st.session_state and st.session_state['directed'] == 'False':
-                st.markdown("<span class='bold-text'>RECIPROCAL</span> is not applicable if the graph is undirected.", unsafe_allow_html=True)
-                # st.write(f"RECIPROCAL is not applicable if the graph is undirected.")
-            
-            if key == 'directed_cycle' and 'loops' in st.session_state and st.session_state['loops'] == 'False':
-                st.markdown("<span class='bold-text'>DIRECTED CYCLE</span> is not applicable if the graph has no loops.", unsafe_allow_html=True)
-                # st.write(f"DIRECTED CYCLE is not applicable if the graph has no loops.")
-
-            if (key == 'positive_weights' or key == 'negative_weights') and 'weighted' in st.session_state and st.session_state['weighted'] == 'False':
-                st.markdown("<span class='bold-text'>" + key.replace("_", " ").title() + "</span> is not applicable if the graph is unweighted.", unsafe_allow_html=True)
-                # st.write(f"{key.replace('_', ' ').title()} is not applicable if the graph is unweighted.")
-            
-            if key == 'directed_cycle' and 'directed' in st.session_state and st.session_state['directed'] == 'False':
-                st.markdown("<span class='bold-text'>DIRECTED CYCLE</span> is not applicable if the graph is undirected.", unsafe_allow_html=True)
+                # if (key == 'positive_weights' or key == 'negative_weights') and 'weighted' in st.session_state and st.session_state['weighted'] == 'False':
+                #     st.markdown("<span class='bold-text'>" + key.replace("_", " ").title() + "</span> is not applicable if the graph is unweighted.", unsafe_allow_html=True)
+                #     # st.write(f"{key.replace('_', ' ').title()} is not applicable if the graph is unweighted.")
+                
+                # if key == 'directed_cycle' and 'directed' in st.session_state and st.session_state['directed'] == 'False':
+                #     st.markdown("<span class='bold-text'>DIRECTED CYCLE</span> is not applicable if the graph is undirected.", unsafe_allow_html=True)
 
 
 
@@ -497,7 +709,7 @@ def page_search():
     # showing the current advanced filters
     for i, filter_ in enumerate(st.session_state.filters):
         cols = st.columns([10.2, 4, 4, 5.3, 2.5, 6.5])
-        use_options = statistics_options if filter_['category'] in statistics_options else advanced_statistics_option
+        use_options = stat_options if filter_['category'] in stat_options else stat_adv_options
         with cols[0]:
             st.session_state.filters[i]['category'] = st.selectbox("Category", use_options, key=f"category_{i}", index = use_options.index(filter_['category']))
         with cols[1]:
@@ -511,69 +723,161 @@ def page_search():
             st.button("Delete", on_click=delete_filter, args=(i,), key=f"delete_{i}")
 
     # Add-advanced-filter button
-    statistics_button1, statistics_button2 , _= st.columns([1.3, 2, 5])
-    with statistics_button1:
-        st.button("Add Statistical Filter", on_click=add_default_filter)
-    with statistics_button2:
-        st.button("Add Advanced Statistical Filter", on_click=add_advanced_default_filter)
+    if selected_schema != select_schema_default_value:
+        statistics_button1, statistics_button2 , _= st.columns([1.3, 2, 5])
+        if len(stat_options) != 0:
+            with statistics_button1:
+                st.button("Add Statistical Filter", on_click=add_default_filter, args=(stat_options[0],))
+        if len(stat_adv_options) != 0:
+            with statistics_button2:
+                st.button("Add Advanced Statistical Filter", on_click=add_advanced_default_filter, args=(stat_adv_options[0],))
 
     # Searching button
-    if st.button("Search"):
-        # Check if the search text field is empty before proceeding
-        if not search_text:
-            st.warning("Search text cannnot be empty")
-        else:
-            results = perform_search(
-                search_text.replace('network', ''), 
-                basic_options.keys(), 
-                st.session_state.filters, 
-                result_count,
-                df
-            )
-            # Display the searching results
-            st.markdown("<div class='search-results'>Search Results:</div>", unsafe_allow_html=True)
-            # st.write("Search Results:")
-            st.markdown("---")
-            
-            # Iterate over each row in the search results DataFrame
-            for index, row in results.iterrows():
-                with st.container():
-                    st.markdown(f"### <a href='{row['link']}' target='_blank' class='custom-link'>{row['name']}</a>", unsafe_allow_html=True)
-                    # st.markdown(f"### [{row['name']}]({row['link']})", unsafe_allow_html = True)
-                    description_text = row['description']
-                    random_mark = randkey.random_string()
+    if selected_schema != select_schema_default_value:
+        if st.button("Search"):
+            # Check if the search text field is empty before proceeding
+            if not search_text:
+                st.warning("Search text cannnot be empty")
+            else:
+                df = pd.read_csv(os.path.join("./data/embedding", f"{selected_schema}.csv"))
+                results = perform_search(
+                    search_text.replace('network', ''), 
+                    boolean_options, 
+                    st.session_state.filters, 
+                    result_count,
+                    df,
+                    ann_model,
+                    selected_schema,
+                )
+                # Display the searching results
+                st.markdown("<div class='search-results'>Search Results:</div>", unsafe_allow_html=True)
+                # st.write("Search Results:")
+                st.markdown("---")
+                
+                # Iterate over each row in the search results DataFrame
+                for index, row in results.iterrows():
+                    with st.container():
+                        schema_file = json.load(open(os.path.join('./data/schema', f"{selected_schema}.json"), 'r'))
+                        row_link_attr = schema_file['link'][0] if len(schema_file['link']) != 0 else None
+                        row_name_attr = schema_file['title'][0] if len(schema_file['title']) != 0 else None
+                        row_link = row[schema_file['link'][0]] if len(schema_file['link']) != 0 else ''
+                        row_name = row[schema_file['title'][0]] if len(schema_file['title']) != 0 else ''
+                        st.markdown(f"### <a href='{row_link}' target='_blank' class='custom-link'>{row_name}</a>", unsafe_allow_html=True)
+                        # st.markdown(f"### [{row['name']}]({row['link']})", unsafe_allow_html = True)
+                        description_text = row['merged_text']
+                        random_mark = randkey.random_string()
 
-                    # Highlight terms in the description that match terms in the search text
-                    highlighted_text = highlight.highlight_texts(search_text.replace('network', ''), description_text, spacy_nlp, random_mark)
-                    highlight_start_tag = "<span class='highlight-keyword'>"
-                    highlight_end_tag = "</span>"
+                        # Highlight terms in the description that match terms in the search text
+                        highlighted_text = highlight.highlight_texts(search_text.replace('', ''), description_text, spacy_nlp, random_mark)
+                        highlight_start_tag = "<span class='highlight-keyword'>"
+                        highlight_end_tag = "</span>"
 
-                    # Apply the highlighting HTML tags to the description text
-                    pattern = rf'{re.escape(random_mark)}(.*?){re.escape(random_mark)}'
-                    highlighted_text = re.sub(pattern, f"{highlight_start_tag}\\1{highlight_end_tag}", highlighted_text)
+                        # Apply the highlighting HTML tags to the description text
+                        pattern = rf'{re.escape(random_mark)}(.*?){re.escape(random_mark)}'
+                        highlighted_text = re.sub(pattern, f"{highlight_start_tag}\\1{highlight_end_tag}", highlighted_text)
 
-                    # Display the highlighted description text
-                    st.markdown(f"<span class='description'>{highlighted_text}</span>", unsafe_allow_html=True)
-                    for col in sorted(results.columns):
-                        if col not in ['name', 'link', 'description']:
-                            if pd.isna(row[col]):
-                                value = 'Unknown'
-                            else:
-                                value = row[col]
-                            st.markdown(f"<span class='bold-text'>{col.replace('_', ' ').title()}: </span>{value}", unsafe_allow_html=True)
-                            #st.text(f"{col.replace('_', ' ').title()}: {value}")
-                    st.markdown(f"[Read More]({row['link']})", unsafe_allow_html = True)
-                    st.markdown("---")
+                        # Display the highlighted description text
+                        st.markdown(f"<span class='description'>{highlighted_text}</span>", unsafe_allow_html=True)
+                        for col in sorted(results.columns):
+                            if col not in [row_link_attr, row_name_attr, 'merged_text']:
+                                if pd.isna(row[col]):
+                                    value = 'Unknown'
+                                else:
+                                    value = row[col]
+                                st.markdown(f"<span class='bold-text'>{col.replace('_', ' ').title()}: </span>{value}", unsafe_allow_html=True)
+                                #st.text(f"{col.replace('_', ' ').title()}: {value}")
+                        st.markdown(f"[Read More]({row_link})", unsafe_allow_html = True)
+                        st.markdown("---")
 
 # Streamlit page for dataset submissions
 def page_submission():
-    st.markdown("<h1>SemanticNetSearch Datasets Submission</h1>", unsafe_allow_html=True)
+    schema_folder = './data/schema'
+    schema_list = []
+
+    def read_schema(schema_name):
+        with open(os.path.join(schema_folder, schema_name + '.json'), 'r') as f:
+            return json.load(f)
+    
+    def process_bool_value(value):
+        if isinstance(value, (int, float)):
+            return True if value > 0 else False
+        if isinstance(value, str):
+            value_lower = value.strip().lower()
+            if value_lower in ["true", "yes", "t"]:
+                return True
+            if value_lower in ["false", "no", "f"]:
+                return False
+        return ''
+    
+    # Function to create and save a new DataFrame based on user choices regarding column mappings
+    def submit_data(user_choices, original_df, main_attrs, schema_name):
+        schema_file = os.path.join("./data/schema", f"{schema_name}.json")
+        with open(schema_file, 'r', encoding='utf-8') as file:
+            schema_map = json.load(file)
+
+        saving_file = os.path.join("./data/info", f"{schema_name}.csv")
+        saving_df = pd.read_csv(saving_file)
+        result_df = pd.DataFrame()
+
+        # Iterate over each user-specified column mapping
+        for new_col, original_col in user_choices.items():
+            if original_col is None:
+                continue # Skip processing if the user did not specify a column
+            if original_col in main_attrs:
+                result_df[original_col] = original_df[new_col].copy()
+            if original_col in schema_map['Boolean']:
+                result_df[original_col] = result_df[original_col].apply(process_bool_value)
+                
+        # Generate a timestamp to use in the filename, ensuring uniqueness and traceability
+        # timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        # rand_str = randkey.random_string(10)
+        # file_name = f"data_{timestamp}_{rand_str}.csv"
+        # result_df.to_csv("./datasets/user_submission/" + file_name, index=False)
+
+        merged_df = pd.merge(saving_df, result_df, how='outer')
+        merged_df.to_csv(saving_file, index=False)
+
+    def update_vectors(schema_name):
+        if schema_name == select_schema_default_value:
+            st.error("Please select a schema before uploading data.")
+            return
+        embedding.update_embedding(schema_name, word2vec_model)
+        ann_builder.update_ann_model(schema_name, config)
+
+
+    if os.path.exists(schema_folder):
+        for file_name in os.listdir(schema_folder):
+            if file_name.endswith('.json'):
+                schema_list.append(file_name[:-5])
+    
+    schema_list.insert(0, select_schema_default_value)
+
+    st.markdown("<h1>Import Data</h1>", unsafe_allow_html=True)
+
+    cols = st.columns([3, 2, 6])
+    with cols[0]:
+        selected_schema = st.selectbox("Select a Schema:", options=schema_list, index=0, key="selected_schema")
+    cols = st.columns([2, 8])
+    with cols[0]:
+        if st.button("Update Embedding", key="update_embedding_button_key"):
+            update_vectors(selected_schema)
+    
+    if selected_schema == select_schema_default_value:
+        to_match_schema = {}
+    else:
+        with open(os.path.join(schema_folder, selected_schema + '.json'), 'r') as f:
+            to_match_schema = json.load(f)
+
     st.markdown("<h3>Select a file to upload:</h3>", unsafe_allow_html=True)
 
     # Create a file uploader widget allowing specific file types
     uploaded_file = st.file_uploader("label", label_visibility='collapsed', type=['csv', 'xlsx', 'xls'])
     if uploaded_file is not None:
         df = None
+
+        if selected_schema == select_schema_default_value:
+            st.error("Please select a schema before uploading data.")
+            return
 
         # Determine the file type and load data accordingly
         if uploaded_file.type == "text/csv":
@@ -587,13 +891,18 @@ def page_submission():
         if df is None:
             st.markdown("<h4>Error: Illegal File. Please try again.</h4>", unsafe_allow_html=True)
         else:
+            selected_schema_content = read_schema(selected_schema)
             st.markdown("Automatically matching...", unsafe_allow_html=True)
             sub_attrs = [x for x in df.columns]
-            main_attrs = ['name', 'link', 'description', 'category']
-            main_attrs.extend(statistics_options)
-            main_attrs.extend(advanced_statistics_option)
-            for option in config['basic_filters']:
-                main_attrs.append(option)
+            main_attrs = []
+            for category in selected_schema_content:
+                for attr in selected_schema_content[category]:
+                    main_attrs.append(attr)
+            # main_attrs = ['name', 'link', 'description', 'category']
+            # main_attrs.extend(statistics_options)
+            # main_attrs.extend(advanced_statistics_option)
+            # for option in config['basic_filters']:
+            #     main_attrs.append(option)
             nlp = spacy.load('en_core_web_md')
             matching = extract.match_schema(main_attrs, sub_attrs, nlp, threshold=0.8, max_saved_attrs=6)
             user_choices = {}
@@ -622,71 +931,11 @@ def page_submission():
                                 )
                                 user_choices[key] = selected_value
                 if st.button("Confirm and Submit"):
-                    submit_data(user_choices, df, main_attrs)
+                    submit_data(user_choices, df, main_attrs, selected_schema)
                     st.success("Your data has been submitted successfully.")
 
 def page_tutorial():
-    st.title("User Guide for SemanticNetSearch")
-
-    st.header("Introduction")
-    st.write("""
-    SemanticNetSearch is an advanced tool designed to empower researchers with semantic search technology to access network datasets. Our platform provides an intuitive web interface for extracting relevant information, searching through extensive datasets, and submitting your data for analysis. Access the application by visiting http://ns2.nilou.top, and no prior installation is required.
-    """)
-
-    st.header("Semantic Searching")
-    st.subheader("Step 1: Requirements Extraction")
-    st.write("""
-    - Enter your requirements in natural language in the text area, and click 'Extract Filters' to extract the filters from the text.
-    """)
-    st.write("You can try the following example: An undirected network about the relationship between users on social media, with more than 10000 nodes, 100000 edges, a max degree between 500 and 2000, and an average degree smaller than 50.")
-
-    video_col1 = st.columns([1, 1])
-    with video_col1[0]:
-        st.video('./videos/Extraction.mp4', format='video/mp4', start_time=0, loop=True)
-
-    st.subheader("Step 2: Filters Adjustment")
-
-    st.write("""
-    - After the filters have been extracted from your input, they will appear in a manageable list below. This list allows you to review and adjust the filters to refine your search criteria.
-    """)
-    st.write("You can try to cancel all the 'accept missing' checkboxes.")
-
-    video_col2 = st.columns([1, 1])
-    with video_col2[0]:
-        st.video('./videos/Adjustment.mp4', format='video/mp4', start_time=0, loop=True)
-
-    st.subheader("Step 3: Searching")
-
-    st.write("""
-    - Click the Search button below to perform the search. The system will return a list of relevant datasets that match your criteria. You can click on the dataset name to view its detailed information.
-    """)
-
-    st.header("Data Submission")
-    st.write("""
-    - **Uploading Files**: Click on 'Upload File' button and select the file you wish to submit. Supported formats include CSV and Excel.
-    - **Auto-matching**: The system will automatically try to match your data columns to our database. You can review and adjust these mappings before final submission.
-    - **Submission**: Once satisfied with the mappings, click 'Submit' to finalize your data submission.
-    """)
-    st.write("You can try data submission function on our sample dataset:")
-    sample_csv_path = "./datasets/sample_submission.csv"
-    with open(sample_csv_path, "rb") as file:
-        st.download_button(
-            label="Download Sample CSV File",
-            data=file,
-            file_name="sample_submission.csv",
-            mime='text/csv'
-        )
-
-    st.header("FAQ")
-    st.write("""
-    - **Q**: Are the search results reproducible?
-    - **A**: The "Filters Extraction" process has a certain degree of randomness due to the use of LLM, but the search results are reproducible when the search text and conditions are exactly the same.
-    """)
-
-    st.header("Getting Help")
-    st.write("""
-    If you encounter any issues or have questions, please contact our support team at zixinwei1@link.cuhk.edu.cn.
-    """)
+    content.show_tutorial()
 
 def page_about():
     pass
@@ -701,14 +950,17 @@ st.sidebar.markdown("""
 </style>
 <div class='sidebar-title'>Navigation</div>
 """, unsafe_allow_html=True)
-page = st.sidebar.radio("Choose a page:", ("Search", "Datasets Submission", "Tutorial", "About"))
+
+page = st.sidebar.radio("Choose a page:", ("Search", "Create", "Import Data", "Tutorial", "About"))
 
 if page == "Search":
     page_search()
-elif page == "Datasets Submission":
+elif page == "Import Data":
     page_submission()
 elif page == "Tutorial":
     page_tutorial()
 elif page == "About":
     page_about()
+elif page == "Create":
+    page_create()
 

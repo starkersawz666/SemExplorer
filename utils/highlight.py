@@ -42,8 +42,8 @@ def check_semantic_relationship(word1, word2, pos1 = None, pos2 = None):
 # Some words are ignored because they are not semantically related to the key words
 # Grammar dependencies are used to determine the positions that key words may appear
 def highlight_texts(text_A, text_B, spacy_nlp, mark):
-    doc_A = spacy_nlp(text_A)
-    doc_B = spacy_nlp(text_B)
+    doc_A = spacy_nlp(str(text_A))
+    doc_B = spacy_nlp(str(text_B))
     ignore_verbs = {"be", "am", "is", "are", "was", "were", "being", "been", "have", "has", "had", "do", "does", "did", "will", "would", "shall", "should", "can", "could", "may", "might", "must"}
     important_deps = {'nsubj', 'dobj', 'pobj', 'attr', 'ROOT', 'compound'}
     

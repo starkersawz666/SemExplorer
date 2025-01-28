@@ -150,8 +150,21 @@ def extraction_prompt(input_type: str, output_type: str, is_list: bool, input_de
     """
     return prompt
 
+def transform_answer(answer):
+    pattern = r"^\s*\{\s*(\d+)\s*\}\s*$"
+    match = re.match(pattern, answer)
+    if match:
+        integer_value = match.group(1)
+        return f'{{"answer": {integer_value}}}'
+    else:
+        return answer
+
 def extract_json_from_answer(answer: str):
     start_index = end_index = -1
+    if '```json' in answer:
+        start_index = answer.find("```json") + 7
+        end_index = answer.rfind("```") - 1
+        answer = answer[start_index:end_index+1]
     if '{' in answer:
         start_index = answer.find("{")
     else:
@@ -162,9 +175,16 @@ def extract_json_from_answer(answer: str):
         end_index = answer.rfind("]")
     if start_index != -1 and end_index != -1:
         answer = answer[start_index:end_index+1].replace("\_", "_")
+    if not answer.startswith('{') and not answer.startswith('['):
+        answer = '{' + answer + '}'
+    answer = transform_answer(answer)
+    # print("ANSWER: " + answer)
     return json.loads(re.sub(r'\/\/.*$', '', answer, flags=re.MULTILINE))
 
 def match_schema(main_schema, sub_schema, nlp, threshold=0.85, max_saved_attrs=5):
+    # print('-----------------------------------')
+    # print(main_schema, sub_schema)
+    # print('-----------------------------------')
     return_schema = {}
     for attr in sub_schema:
         # if the key is in the main schema, directly add it to the return schema
@@ -190,11 +210,14 @@ def match_schema(main_schema, sub_schema, nlp, threshold=0.85, max_saved_attrs=5
                 return_schema[attr] = similar_attrs[0][0]
             # else, test by LLM
             else:
-                prompt = extraction_prompt('str', 'bool', False, 'a few relevant words', 'whether one of the words in the input has the same meaning to the word' + attr.replace("_", " "), None, "")
+                prompt = extraction_prompt('str', 'bool', False, 'a few relevant words', 'whether one of the words in the input has the same meaning to the word' + attr.replace("_", " "), None, "An example of output is: {'relevant_word': true} or {'relevant_word': false}.")
                 messages = [{"role": "system", "content": prompt}]
                 messages.append({"role": "user", "content": "The word is: " + attr.replace("_", " ") + ", and the possible relevant words are: " + (", ".join(x[0] for x in similar_attrs)).replace("_", " ") + "."})
                 response = get_response(messages)
                 content = response.output.choices[0]["message"]["content"]
+                # print('-----------------------------------')
+                # print(content)
+                # print('-----------------------------------')
                 json_value = extract_json_from_answer(content)
                 bool_value = next(iter(json_value.values()))
                 if bool_value:
@@ -203,6 +226,9 @@ def match_schema(main_schema, sub_schema, nlp, threshold=0.85, max_saved_attrs=5
                     messages.append({"role": "user", "content": "The word is: " + attr.replace("_", " ") + ", and the possible relevant words are: " + (", ".join(similar_attrs[i][0] + '(' + str(i) + ')' for i in range(len(similar_attrs)))).replace("_", " ") + "."})
                     response = get_response(messages)
                     content = response.output.choices[0]["message"]["content"]
+                    # print('-----------------------------------')
+                    # print(content)
+                    # print('-----------------------------------')
                     json_value = extract_json_from_answer(content)
                     int_value = json_value if type(json_value) == int else next(iter(json_value.values()))
                     return_schema[attr] = similar_attrs[int_value][0]
