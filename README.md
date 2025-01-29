@@ -13,8 +13,8 @@ SemExplorer is a tool designed to enhance the efficiency and accuracy of dataset
 ## Quick Start
 ### Installation
 ```bash
-git clone https://github.com/starkersawz666/Semantic-Net-Search.git
-cd Semantic-Net-Search
+git clone https://github.com/starkersawz666/SemExplorer.git
+cd SemExplorer
 pip install -r requirements.txt
 ```
 ### Running the Web Interface
