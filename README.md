@@ -1,5 +1,8 @@
 # SemExplorer
 
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/) ![Static Badge](https://img.shields.io/badge/SIGMOD-2025-yellow?link=https%3A%2F%2Fdl.acm.org%2Fdoi%2F10.1145%2F3722212.3725133)
+
+
 ## Introduction
 SemExplorer is a tool designed to enhance the efficiency and accuracy of dataset searches using large language models and natural language processing technologies. This project integrates automated text processing, SQL generation, and an interactive web interface to assist users in quickly locating and analyzing data.
 
